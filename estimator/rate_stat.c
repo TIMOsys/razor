@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -50,13 +50,13 @@ void rate_stat_reset(rate_stat_t* rate)
 /*删除过期的统计数据*/
 static void rate_stat_erase(rate_stat_t* rate, int64_t now_ts)
 {
-	int new_oldest_ts;
+	int64_t new_oldest_ts;
 	rate_bucket_t* bucket;
 
 	if (rate->oldest_ts == -1)
 		return;
 	
-	new_oldest_ts = (int)(now_ts - rate->wnd_size + 1);
+	new_oldest_ts = now_ts - rate->wnd_size + 1;
 	if (new_oldest_ts <= rate->oldest_ts)
 		return;
 
@@ -90,13 +90,14 @@ void rate_stat_update(rate_stat_t* rate, size_t count, int64_t now_ts)
 		rate->oldest_ts = now_ts;
 	}
 
-	ts_offset = (int)(now_ts - rate->oldest_ts);
+	ts_offset = (int64_t)(now_ts - rate->oldest_ts);
 	index = (rate->oldest_index + ts_offset) % rate->wnd_size;
-	
+
+	rate->sample_num++;
+
 	rate->buckets[index].sum += count;
 	rate->buckets[index].sample++;
 
-	rate->sample_num++;
 	rate->accumulated_count += count;
 
 
@@ -109,11 +110,11 @@ int rate_stat_rate(rate_stat_t* rate, int64_t now_ts)
 
 	rate_stat_erase(rate, now_ts);
 
-	active_wnd_size = (int)(now_ts - rate->oldest_ts + 1);
-	if (rate->sample_num == 0 || active_wnd_size <= 1 || (rate->sample_num == 1 && active_wnd_size <= rate->wnd_size))
+	active_wnd_size = (int64_t)(now_ts - rate->oldest_ts + 1);
+	if (rate->sample_num == 0 || active_wnd_size <= 1 || (active_wnd_size < rate->wnd_size))
 		return -1;
 
-	ret = (int)(rate->accumulated_count * rate->scale / active_wnd_size + 0.5);
+	ret = (int)(rate->accumulated_count * 1.0f * rate->scale / rate->wnd_size + 0.5);
 
 	return ret;
 }

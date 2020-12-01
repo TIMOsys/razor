@@ -19,6 +19,12 @@
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
       <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
     </Filter>
+    <Filter Include="bbr">
+      <UniqueIdentifier>{430648d5-f6bb-4094-96e2-8db2d13c28be}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="remb">
+      <UniqueIdentifier>{95dd9241-d15b-4e9b-9104-4bc73ffb4507}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\common\cf_crc32.c">
@@ -96,12 +102,6 @@
     <ClCompile Include="..\estimator\rate_stat.c">
       <Filter>estimator</Filter>
     </ClCompile>
-    <ClCompile Include="..\estimator\feedback_adapter.h">
-      <Filter>estimator</Filter>
-    </ClCompile>
-    <ClCompile Include="..\estimator\feedback_adapter.c">
-      <Filter>estimator</Filter>
-    </ClCompile>
     <ClCompile Include="..\estimator\remote_bitrate_estimator.c">
       <Filter>estimator</Filter>
     </ClCompile>
@@ -116,6 +116,48 @@
     </ClCompile>
     <ClCompile Include="..\cc\razor_log.c">
       <Filter>cc</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\windowed_filter.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_rtt_stats.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_controller.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_loss_rate_filter.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_bandwidth_sample.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_feedback_adpater.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_common.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_receiver.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_pacer.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\bbr\bbr_sender.c">
+      <Filter>bbr</Filter>
+    </ClCompile>
+    <ClCompile Include="..\estimator\cc_feedback_adapter.h">
+      <Filter>estimator</Filter>
+    </ClCompile>
+    <ClCompile Include="..\estimator\cc_feedback_adapter.c">
+      <Filter>estimator</Filter>
+    </ClCompile>
+    <ClCompile Include="..\remb\remb_receiver.c">
+      <Filter>remb</Filter>
+    </ClCompile>
+    <ClCompile Include="..\remb\remb_sender.c">
+      <Filter>remb</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -211,6 +253,42 @@
     </ClInclude>
     <ClInclude Include="..\cc\razor_callback.h">
       <Filter>cc</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\windowed_filter.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_rtt_stats.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_controller.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_common.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_feedback_adpater.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_loss_rate_filter.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_bandwidth_sample.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_receiver.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_pacer.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\bbr\bbr_sender.h">
+      <Filter>bbr</Filter>
+    </ClInclude>
+    <ClInclude Include="..\remb\remb_sender.h">
+      <Filter>remb</Filter>
+    </ClInclude>
+    <ClInclude Include="..\remb\remb_receiver.h">
+      <Filter>remb</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

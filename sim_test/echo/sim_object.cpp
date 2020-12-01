@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -12,6 +12,16 @@
 #include <time.h>
 #include <assert.h>
 
+int frame_log(int level, const char* file, int line, const char *fmt, ...)
+{
+	va_list vl;
+	va_start(vl, fmt);
+	log_win_write(level, file, line, fmt, vl);
+	va_end(vl);
+
+	return 0;
+}
+
 static void notify_callback(void * event, int type, uint32_t val)
 {
 	SimFramework* frame = (SimFramework*)event;
@@ -19,11 +29,11 @@ static void notify_callback(void * event, int type, uint32_t val)
 		frame->on_notify(type, val);
 }
 
-static void notify_change_bitrate(void * event, uint32_t bitrate_kbps)
+static void notify_change_bitrate(void * event, uint32_t bitrate_kbps, int lost)
 {
 	SimFramework* frame = (SimFramework*)event;
 	if (frame != NULL)
-		frame->on_change_bitrate(bitrate_kbps);
+		frame->on_change_bitrate(bitrate_kbps, lost);
 }
 
 static void notify_state(void * event, const char* info)
@@ -83,13 +93,19 @@ void SimFramework::destroy()
 	sim_destroy();
 }
 
-int SimFramework::connect(uint32_t user_id, const char* receiver_ip, uint16_t receiver_port)
+void SimFramework::set_bitrate(uint32_t conf_min_bitrate, uint32_t conf_start_bitrate, uint32_t conf_max_bitrate)
+{
+	if (state_ != eframe_idle)
+		sim_set_bitrates(conf_min_bitrate, conf_start_bitrate, conf_max_bitrate);
+}
+
+int SimFramework::connect(int transport_type, int padding, int fec, uint32_t user_id, const char* receiver_ip, uint16_t receiver_port)
 {
 	if (state_ != eframe_inited)
 		return -1;
 
 	//连接接收端
-	if (sim_connect(user_id, receiver_ip, receiver_port) != 0){
+	if (sim_connect(user_id, receiver_ip, receiver_port, transport_type, padding, fec) != 0){
 		printf("sim connect failed!\n");
 		return -2;
 	}
@@ -190,13 +206,18 @@ void SimFramework::on_notify(int type, uint32_t val)
 		if (state_ == eframe_connected)
 			::PostMessage(hwnd_, WM_NET_RECOVER, (WPARAM)val, NULL);
 		break;
+
+	case sim_fir_notify:
+		if (state_ == eframe_connected)
+			::PostMessage(hwnd_, WM_FIR_NOTIFY, NULL, NULL);
+		break;
 	}
 }
 
-void SimFramework::on_change_bitrate(uint32_t bitrate_kbps)
+void SimFramework::on_change_bitrate(uint32_t bitrate_kbps, int lost)
 {
 	if (hwnd_ != NULL)
-		::PostMessage(hwnd_, WM_CHANGE_BITRATE, (WPARAM)bitrate_kbps, NULL);
+		::PostMessage(hwnd_, WM_CHANGE_BITRATE, (WPARAM)bitrate_kbps, (LPARAM)lost);
 }
 
 void SimFramework::on_state(const char* info)

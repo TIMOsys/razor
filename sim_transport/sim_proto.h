@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -30,6 +30,8 @@ enum
 	SIM_SEG_ACK,
 	SIM_FEEDBACK,
 	SIM_FIR,				/*请求关键帧重传*/
+	SIM_PAD,				/*padding报文*/
+	SIM_FEC,				/*FEC报文*/
 
 	MAX_MSG_ID
 };
@@ -58,6 +60,7 @@ typedef struct
 	uint32_t cid;						/*协商的呼叫ID，每次是一个随机值,和disconnect等消息保持一致*/
 	uint16_t token_size;				/*token是一个验证信息，可以用类似证书的方式来进行验证*/
 	uint8_t	 token[SIM_TOKEN_SIZE];
+	uint8_t	 cc_type;					/*拥塞控制类型*/
 }sim_connect_t;
 
 typedef struct
@@ -84,9 +87,12 @@ typedef struct
 	uint8_t		payload_type;			/*编码器类型*/
 
 	uint8_t		remb;					/*0表示开启remb, 其他表示不开启*/
+	uint16_t	fec_id;					/*1表示开启FEC, 其他表示不开启*/
 	uint16_t	send_ts;				/*发送时刻相对帧产生时刻的时间戳*/
 	uint16_t	transport_seq;			/*传输通道序号，这个是传输通道每发送一个报文，它就自增长1，而且重发报文也会增长*/
 	
+	uint32_t	send_id;
+
 	uint16_t	data_size;
 	uint8_t		data[SIM_VIDEO_SIZE];
 }sim_segment_t;
@@ -121,6 +127,47 @@ typedef struct
 {
 	uint32_t	fir_seq;							/*fir的序号，每次接收端触发条件时递增*/
 }sim_fir_t;
+
+#define PADDING_DATA_SIZE  500
+typedef struct
+{
+	uint32_t	send_ts;				/*发送时刻相对帧产生时刻的时间戳*/
+	uint16_t	transport_seq;			/*传输通道序号，这个是传输通道每发送一个报文，它就自增长1，而且重发报文也会增长*/
+
+	uint16_t	data_size;
+	uint8_t		data[PADDING_DATA_SIZE];
+}sim_pad_t;
+
+typedef struct
+{
+	uint32_t	seq;
+	uint32_t	fid;
+	uint32_t	ts;
+	uint16_t	index;					/*帧分包序号*/
+	uint16_t	total;					/*帧分包总数*/
+	uint8_t		ftype;					/*视频帧类型*/
+	uint8_t		payload_type;			/*编码器类型*/
+	uint16_t	size;					/*数据长度*/
+}sim_fec_meta_t;
+
+typedef struct
+{
+	uint16_t		fec_id;					/*fec对象ID，自增长*/
+	uint8_t			row;					/*fec行数*/
+	uint8_t			col;					/*fec列数*/
+	uint8_t			index;					/*内部组包的序号,用于恢复行和列上的报文*/
+	uint16_t		count;					/*矩阵内报文个数*/
+	uint32_t		base_id;				/*开始报文的id*/
+
+	uint32_t	send_ts;					/*发送时刻相对帧产生时刻的时间戳*/
+	uint16_t	transport_seq;				/*传输通道序号，这个是传输通道每发送一个报文，它就自增长1，而且重发报文也会增长*/
+
+	sim_fec_meta_t	fec_meta;				/*FEC元数据,用于恢复segment中的元信息*/
+
+	uint16_t		fec_data_size;			/*FEC数据长度*/
+	uint8_t			fec_data[SIM_VIDEO_SIZE];/*FEC数据块*/
+	
+}sim_fec_t;
 
 void							sim_encode_msg(bin_stream_t* strm, sim_header_t* header, void* body);
 int								sim_decode_header(bin_stream_t* strm, sim_header_t* header);

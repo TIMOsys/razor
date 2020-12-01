@@ -16,6 +16,11 @@ void test_pace();
 void test_rate_stat();
 void test_rbe();
 void test_loss_stat();
+void test_windowed_filter();
+void test_bbr_transfer_tracker();
+void test_bandwidth_sampler();
+void test_bbr_proc();
+void test_bbr_receiver();
 
 #endif
 

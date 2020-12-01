@@ -7,8 +7,10 @@
 #include "echoDlg.h"
 #include "afxdialogex.h"
 
-#include "echo_h264_common.h"
+#include "codec_common.h"
 #include "utf8to.h"
+
+#include "sim_external.h"
 
 #include <vector>
 #include <string>
@@ -22,7 +24,7 @@ using namespace std;
 
 
 // CAboutDlg dialog used for App About
-#define SIM_PORT 16008
+#define SIM_PORT 16008 //6009//16008
 
 class CAboutDlg : public CDialogEx
 {
@@ -55,7 +57,7 @@ END_MESSAGE_MAP()
 
 // CechoDlg dialog
 
-
+//180.150.184.115, 192.168.150.30
 
 CechoDlg::CechoDlg(CWnd* pParent /*=NULL*/)
 	: CDialogEx(CechoDlg::IDD, pParent)
@@ -67,6 +69,11 @@ CechoDlg::CechoDlg(CWnd* pParent /*=NULL*/)
 	, m_strInfo(_T(""))
 	, m_strLocalRes(_T(""))
 	, m_strRemoteRes(_T(""))
+	, m_strCC(_T(""))
+	, m_bPadding(FALSE)
+	, m_strResolution(_T(""))
+	, m_strCodec(_T(""))
+	, m_bFEC(TRUE)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 	m_viewing = FALSE;
@@ -89,12 +96,19 @@ void CechoDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Text(pDX, IDC_EDIP, m_strIP);
 	DDX_Text(pDX, IDC_EDPORT, m_iPort);
 	DDV_MinMaxInt(pDX, m_iPort, 0, 65535);
-	DDX_Text(pDX, IDC_EDUSER, m_iUser);
 	DDX_Text(pDX, IDC_STATE, m_strState);
 	DDX_Control(pDX, IDC_BTNCONNECT, m_btnEcho);
 	DDX_Text(pDX, IDC_EDINFO, m_strInfo);
 	DDX_Text(pDX, IDC_LOCAL_RES, m_strLocalRes);
 	DDX_Text(pDX, IDC_REMOTE_RES, m_strRemoteRes);
+	DDX_Control(pDX, IDC_CBX_CC, m_cbxCC);
+	DDX_CBString(pDX, IDC_CBX_CC, m_strCC);
+	DDX_Check(pDX, IDC_CHKPAD, m_bPadding);
+	DDX_Control(pDX, IDC_CBXRES, m_cbxResolution);
+	DDX_CBString(pDX, IDC_CBXRES, m_strResolution);
+	DDX_Control(pDX, IDC_CBXCODEC, m_cbxCodec);
+	DDX_CBString(pDX, IDC_CBXCODEC, m_strCodec);
+	DDX_Check(pDX, IDC_CHK_FEC, m_bFEC);
 }
 
 BEGIN_MESSAGE_MAP(CechoDlg, CDialogEx)
@@ -110,6 +124,7 @@ BEGIN_MESSAGE_MAP(CechoDlg, CDialogEx)
 
 	ON_MESSAGE(WM_NET_INTERRUPT, OnNetInterrupt)
 	ON_MESSAGE(WM_NET_RECOVER, OnNetRecover)
+	ON_MESSAGE(WM_FIR_NOTIFY, OnFirNotify)
 	ON_MESSAGE(WM_CHANGE_BITRATE, OnChangeBitrate)
 
 	ON_MESSAGE(WM_START_PLAY, OnStartPlay)
@@ -119,6 +134,7 @@ BEGIN_MESSAGE_MAP(CechoDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BTNVIEW, &CechoDlg::OnBnClickedBtnview)
 	ON_BN_CLICKED(IDC_BTNCONNECT, &CechoDlg::OnBnClickedBtnconnect)
 	ON_WM_TIMER()
+	ON_BN_CLICKED(IDC_CHKPAD, &CechoDlg::OnBnClickedChkpad)
 END_MESSAGE_MAP()
 
 
@@ -160,13 +176,18 @@ BOOL CechoDlg::OnInitDialog()
 
 	::CoInitialize(NULL);
 
+	//初始化编码器参数
+	setup_codec(codec_h264);
+
+	m_iUser = rand() % 10000 + 1000;
+
 	m_srcVideo.SetWindowPos(NULL, 0, 0, PIC_WIDTH_480, PIC_HEIGHT_360, SWP_NOMOVE);
 	m_dstVideo.SetWindowPos(NULL, 0, 0, PIC_WIDTH_480, PIC_HEIGHT_360, SWP_NOMOVE);
 
 	InitVideoDevices();
 
 	m_frame = new SimFramework(GetSafeHwnd());
-	m_frame->init(SIM_PORT, MIN_VIDEO_BITARE, START_VIDEO_BITRATE, MAX_VIDEO_BITRAE);
+	m_frame->init(rand() % 1000 + 2000, MIN_VIDEO_BITARE, START_VIDEO_BITRATE, MAX_VIDEO_BITRAE);
 
 	SetTimer(1000, 1000, NULL);
 
@@ -305,9 +326,65 @@ void CechoDlg::InitVideoDevices()
 		m_cbxDevice.SetCurSel(cur_count - 1);
 	else
 		m_cbxDevice.SetCurSel(0);
+
+	m_cbxCC.AddString(_T("GCC"));
+	m_cbxCC.AddString(_T("BBR"));
+	m_cbxCC.AddString(_T("REMB"));
+	m_cbxCC.SetCurSel(0);
+
+	m_cbxResolution.AddString(_T("120P"));
+	m_cbxResolution.AddString(_T("240P"));
+	m_cbxResolution.AddString(_T("360P"));
+	m_cbxResolution.AddString(_T("480P"));
+	m_cbxResolution.AddString(_T("640P"));
+	m_cbxResolution.AddString(_T("720P"));
+	m_cbxResolution.AddString(_T("1080P"));
+
+	m_cbxResolution.SetCurSel(3);
+
+	m_cbxCodec.AddString(_T("H.264"));
+	m_cbxCodec.AddString(_T("H.265"));
+	m_cbxCodec.SetCurSel(0);
 }
 
+int CechoDlg::GetVideoResolution()
+{
+	int ret = VIDEO_480P;
+	if (m_strResolution == _T("120P")){
+		ret = VIDEO_120P;
+	}
+	else if (m_strResolution == _T("240P")){
+		ret = VIDEO_240P;
+	}
+	else if (m_strResolution == _T("360P")){
+		ret = VIDEO_360P;
+	}
+	else if (m_strResolution == _T("480P")){
+		ret = VIDEO_480P;
+	}
+	else if (m_strResolution == _T("640P")){
+		ret = VIDEO_640P;
+	}
+	else if (m_strResolution == _T("720P")){
+		ret = VIDEO_720P;
+	}
+	else if (m_strResolution == _T("1080P")){
+		ret = VIDEO_1080P;
+	}
 
+	return ret;
+}
+
+int CechoDlg::GetCodec()
+{
+	int ret = codec_h264;
+	if (m_strCodec == _T("H.264"))
+		ret = codec_h264;
+	else if (m_strCodec == _T("H.265"))
+		ret = codec_h265;
+
+	return ret;
+}
 
 void CechoDlg::OnBnClickedBtnview()
 {
@@ -321,13 +398,16 @@ void CechoDlg::OnBnClickedBtnview()
 		device = m_strDev.GetBuffer(m_strDev.GetLength());
 		m_viRecorder = new CFVideoRecorder(device);
 
+		int i = GetVideoResolution();
+
 		video_info_t info;
 		info.pix_format = RGB24;
 		info.rate = 24;
-		info.width = PIC_WIDTH_640;
-		info.height = PIC_HEIGHT_480;
-		info.codec_width = PIC_WIDTH_640;
-		info.codec_height = PIC_HEIGHT_480;
+		info.codec = GetCodec();
+		info.width = resolution_infos[i].codec_width;
+		info.height = resolution_infos[i].codec_height;
+		info.codec_width = resolution_infos[i].codec_width;
+		info.codec_height = resolution_infos[i].codec_height;
 		m_viRecorder->set_video_info(info);
 
 		RECT display_rect;
@@ -371,13 +451,25 @@ void CechoDlg::OnBnClickedBtnview()
 void CechoDlg::OnBnClickedBtnconnect()
 {
 	UpdateData(TRUE);
-
+	int transport_type = gcc_transport;
 	if (!m_connected){
 		TCHAR* wip;
 		wip = m_strIP.GetBuffer(m_strIP.GetLength());
 		std::string ip = helper::app2asci(wip);
 
-		if (m_frame->connect(m_iUser, ip.c_str(), m_iPort) == 0){
+		setup_codec(GetCodec());
+
+		if (m_strCC == _T("BBR"))
+			transport_type = bbr_transport;
+		else if (m_strCC == _T("GCC"))
+			transport_type = gcc_transport;
+		else if (m_strCC == _T("REMB"))
+			transport_type = remb_transport;
+
+		int i = GetVideoResolution();
+		m_frame->set_bitrate(MIN_VIDEO_BITARE, resolution_infos[i].start_rate * 1000, resolution_infos[i].max_rate * 1000 * 5 / 4);
+
+		if (m_frame->connect(transport_type, (m_bPadding ? 1 : 0), (m_bFEC ? 1 : 0), m_iUser, ip.c_str(), m_iPort) == 0){
 			m_btnView.EnableWindow(FALSE);
 			m_btnEcho.SetWindowText(_T("stop echo"));
 			m_connected = TRUE;
@@ -412,13 +504,16 @@ LRESULT CechoDlg::OnConnectSucc(WPARAM wparam, LPARAM lparam)
 	device = m_strDev.GetBuffer(m_strDev.GetLength());
 	m_viRecorder = new CFVideoRecorder(device);
 
+	int i = GetVideoResolution();
+
 	video_info_t info;
 	info.pix_format = RGB24;
 	info.rate = 24;
-	info.width = PIC_WIDTH_640;
-	info.height = PIC_HEIGHT_480;
-	info.codec_width = PIC_WIDTH_640;
-	info.codec_height = PIC_HEIGHT_480;
+	info.codec = GetCodec();
+	info.width = resolution_infos[i].codec_width;
+	info.height = resolution_infos[i].codec_height;
+	info.codec_width = resolution_infos[i].codec_width;
+	info.codec_height = resolution_infos[i].codec_height;
 	m_viRecorder->set_video_info(info);
 
 	RECT display_rect;
@@ -541,9 +636,9 @@ LRESULT CechoDlg::OnChangeBitrate(WPARAM wparam, LPARAM lparam)
 	//进行发送端带宽调整
 	if (m_viRecorder != NULL){
 		uint32_t bitrate = (uint32_t)wparam;
-		bitrate = max(bitrate, MIN_VIDEO_BITARE / 1000);
-		bitrate = min(bitrate, MAX_VIDEO_BITRAE / 1000);
-		m_viRecorder->on_change_bitrate(bitrate);
+		int lost = (int)lparam;
+		bitrate = SU_MAX(bitrate, MIN_VIDEO_BITARE / 1000);
+		m_viRecorder->on_change_bitrate(bitrate, lost);
 	}
 	return 0L;
 }
@@ -571,6 +666,13 @@ LRESULT CechoDlg::OnNetRecover(WPARAM wparam, LPARAM lparam)
 	if (m_viRecorder != NULL)
 		m_viRecorder->enable_encode();
 
+	return 0L;
+}
+
+LRESULT CechoDlg::OnFirNotify(WPARAM wparam, LPARAM lparam)
+{
+	if (m_viRecorder != NULL)
+		m_viRecorder->set_intra_frame();
 	return 0L;
 }
 
@@ -611,4 +713,10 @@ void CechoDlg::OnTimer(UINT_PTR nIDEvent)
 	}
 
 	CDialogEx::OnTimer(nIDEvent);
+}
+
+
+void CechoDlg::OnBnClickedChkpad()
+{
+	// TODO: Add your control notification handler code here
 }

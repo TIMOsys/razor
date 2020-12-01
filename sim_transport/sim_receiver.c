@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -10,7 +10,10 @@
 
 #define CACHE_SIZE 1024
 #define INDEX(i)	((i) % CACHE_SIZE)
-#define MAX_VIDEO_DELAY_MS 5000
+#define MAX_EVICT_DELAY_MS 6000
+#define MIN_EVICT_DELAY_MS 3000
+
+static void sim_receiver_send_fir(sim_session_t* s, sim_receiver_t* r);
 
 /************************************************播放缓冲区的定义**********************************************************/
 static sim_frame_cache_t* open_real_video_cache(sim_session_t* s)
@@ -23,11 +26,15 @@ static sim_frame_cache_t* open_real_video_cache(sim_session_t* s)
 	cache->f = 1.0f;
 	cache->size = CACHE_SIZE;
 	cache->frames = calloc(cache->size, sizeof(sim_frame_cache_t));
+
+	cache->discard_loss = skiplist_create(idu32_compare, NULL, NULL);
 	return cache;
 }
 
 static inline void real_video_clean_frame(sim_session_t* session, sim_frame_cache_t* c, sim_frame_t* frame)
 {
+	skiplist_iter_t* iter;
+
 	int i;
 	if (frame->seg_number == 0)
 		return;
@@ -48,7 +55,109 @@ static inline void real_video_clean_frame(sim_session_t* session, sim_frame_cach
 	frame->seg_number = 0;
 
 	c->min_fid = frame->fid;
-	sim_debug("clean frame = %u\n", frame->fid);
+
+	while (skiplist_size(c->discard_loss) > 0){
+		iter = skiplist_first(c->discard_loss);
+		if (iter->key.u32 <= c->min_seq)
+			skiplist_remove(c->discard_loss, iter->key);
+		else
+			break;
+	}
+}
+
+static int evict_gop_frame(sim_session_t* s, sim_frame_cache_t* c)
+{
+	uint32_t i, key_frame_id;
+	sim_frame_t* frame = NULL;
+
+	key_frame_id = 0;
+	/*第一帧确定被驱逐，从第二帧开始检查*/
+	for (i = c->min_fid + 2; i < c->max_fid; ++i){
+		frame = &c->frames[INDEX(i)];
+		if (frame->frame_type == 1){
+			key_frame_id = i;
+			break;
+		}
+	}
+
+	if (key_frame_id == 0)
+		return -1;
+
+	sim_debug("evict_gop_frame, from frame = %u, to frame = %u!! \n", c->min_fid + 1, key_frame_id);
+	for (i = c->min_fid + 1; i < key_frame_id; i++){
+		c->frame_ts = c->frames[INDEX(i)].ts;
+		real_video_clean_frame(s, c, &c->frames[INDEX(i)]);
+	}
+
+	c->min_fid = key_frame_id - 1;
+
+	return 0;
+}
+
+static inline int real_video_cache_check_frame_full(sim_session_t* s, sim_frame_t* frame)
+{
+	int i;
+	if (frame->seg_number <= 0)
+		return -1;
+
+	for (i = 0; i < frame->seg_number; ++i)
+		if (frame->segments[i] == NULL)
+			return -1;
+
+	return 0;
+}
+
+static void real_video_cache_evict_discard(sim_session_t* s, sim_frame_cache_t* c)
+{
+	uint32_t pos, missing_seq, i, j;
+	sim_frame_t* frame;
+	skiplist_item_t key;
+
+	if (c->min_fid == c->max_fid)
+		return;
+
+	missing_seq = 0;
+
+	pos = INDEX(c->min_fid + 1);
+	frame = &c->frames[pos];
+	if ((c->min_fid + 1 == frame->fid || frame->frame_type == 1) && real_video_cache_check_frame_full(s, frame) == 0)
+		return;
+
+	for (i = c->min_fid + 1; i <= c->max_fid; ++i){
+		frame = &c->frames[INDEX(i)];
+		if (frame->seg_number <= 0)
+			continue;
+
+		for (j = 0; j < frame->seg_number; ++j){
+			if (frame->segments[j] != NULL){
+				missing_seq = frame->segments[j]->packet_id + frame->segments[j]->total - frame->segments[j]->index;
+				goto evict_lab;
+			}
+		}
+	}
+
+evict_lab:
+	for (i = c->min_seq + 1; i <= missing_seq; ++i){
+		key.u32 = i;
+		if (skiplist_search(c->discard_loss, key) != NULL){
+			if(evict_gop_frame(s, c) != 0)
+				sim_receiver_send_fir(s, s->receiver);
+			break;
+		}
+	}
+}
+
+static void real_video_cache_discard(sim_session_t* s, sim_frame_cache_t* c, uint32_t seq)
+{
+	skiplist_item_t key, val;
+
+	if (seq <= c->min_seq)
+		return;
+
+	key.u32 = val.u32 = seq;
+	skiplist_insert(c->discard_loss, key, val);
+
+	real_video_cache_evict_discard(s, c);
 }
 
 static void close_real_video_cache(sim_session_t* s, sim_frame_cache_t* cache)
@@ -56,6 +165,8 @@ static void close_real_video_cache(sim_session_t* s, sim_frame_cache_t* cache)
 	uint32_t i;
 	for (i = 0; i < cache->size; ++i)
 		real_video_clean_frame(s, cache, &cache->frames[i]);
+
+	skiplist_destroy(cache->discard_loss);
 
 	free(cache->frames);
 	free(cache);
@@ -80,6 +191,8 @@ static void reset_real_video_cache(sim_session_t* s, sim_frame_cache_t* cache)
 	cache->state = buffer_waiting;
 	cache->wait_timer = SU_MAX(100, s->rtt + 2 * s->rtt_var);
 	cache->loss_flag = 0;
+
+	skiplist_clear(cache->discard_loss);
 }
 
 static void real_video_evict_frame(sim_session_t* s, sim_frame_cache_t* c, uint32_t fid)
@@ -101,30 +214,6 @@ static void real_video_evict_frame(sim_session_t* s, sim_frame_cache_t* c, uint3
 		real_video_clean_frame(s, c, &c->frames[INDEX(i)]);
 }
 
-static void evict_gop_frame(sim_session_t* s, sim_frame_cache_t* c)
-{
-	uint32_t i, key_frame_id;
-	sim_frame_t* frame = NULL;
-
-	key_frame_id = 0;
-	for (i = c->min_fid + 2; i < c->max_fid; ++i){
-		frame = &c->frames[INDEX(i)];
-		if (frame->frame_type == 1){
-			key_frame_id = i;
-			break;
-		}
-	}
-
-	if (key_frame_id == 0)
-		return;
-
-	sim_debug("evict_gop_frame, from frame = %u, to frame = %u!! \n", c->min_fid + 1, key_frame_id);
-	for (i = c->min_fid + 1; i < key_frame_id; i++){
-		c->frame_ts = c->frames[INDEX(i)].ts;
-		real_video_clean_frame(s, c, &c->frames[INDEX(i)]);
-	}
-}
-
 static int real_video_cache_put(sim_session_t* s, sim_frame_cache_t* c, sim_segment_t* seg)
 {
 	sim_frame_t* frame;
@@ -139,18 +228,15 @@ static int real_video_cache_put(sim_session_t* s, sim_frame_cache_t* c, sim_segm
 
 	if (seg->fid > c->max_fid){
 		if (c->max_fid > 0)
-			real_video_evict_frame(s, c, seg->fid);
-		else if (c->min_fid == 0){
+			real_video_evict_frame(s, c, seg->fid); /*进行过期槽位清除*/
+		else if (c->min_fid == 0 && c->max_fid == 0){
 			c->min_fid = seg->fid - 1;
 			c->play_frame_ts = seg->timestamp;
 		}
 
 		if (c->max_fid >= 0 && c->max_fid < seg->fid && c->max_ts < seg->timestamp){
 			c->frame_timer = (seg->timestamp - c->max_ts) / (seg->fid - c->max_fid);
-			if (c->frame_timer < 20)
-				c->frame_timer = 20;
-			else if (c->frame_timer > 200)
-				c->frame_timer = 200;
+			c->frame_timer = SU_MAX(20, SU_MIN(200, c->frame_timer));
 		}
 		c->max_ts = seg->timestamp;
 		c->max_fid = seg->fid;
@@ -199,24 +285,11 @@ static inline void real_video_cache_check_waiting(sim_session_t* s, sim_frame_ca
 {
 }
 
-static inline int real_video_cache_check_frame_full(sim_session_t* s, sim_frame_t* frame)
-{
-	int i;
-	if (frame->seg_number <= 0)
-		return -1;
-
-	for (i = 0; i < frame->seg_number; ++i)
-		if (frame->segments[i] == NULL)
-			return -1;
-
-	return 0;
-}
-
 static inline void real_video_cache_sync_timestamp(sim_session_t* s, sim_frame_cache_t* c)
 {
 	uint64_t cur_ts = GET_SYS_MS();
 
-	if (cur_ts > c->play_ts){
+	if (cur_ts >= c->play_ts + 5){
 		c->frame_ts = (uint32_t)((cur_ts - c->play_ts) * c->f) + c->frame_ts;
 		c->play_ts = cur_ts;
 	}
@@ -247,6 +320,26 @@ static uint32_t real_video_ready_ms(sim_session_t* s, sim_frame_cache_t* c)
 	return ret;
 }
 
+/*判断是否发起FIR请求*/
+static int real_video_check_fir(sim_session_t* s, sim_frame_cache_t* c)
+{
+	uint32_t pos;
+	sim_frame_t* frame;
+
+	pos = INDEX(c->min_fid + 1);
+	frame = &c->frames[pos];
+
+	/*第一帧是完整的，不做F.I.R重传*/
+	if (real_video_cache_check_frame_full(s, frame) == 0)
+		return -1;
+
+	/*缓冲区长度小于3秒，继续等待*/
+	if (c->play_frame_ts + MAX_EVICT_DELAY_MS * 3 / 5 > c->max_ts)
+		return -1;
+
+	return 0;
+}
+
 static int real_video_cache_get(sim_session_t* s, sim_frame_cache_t* c, uint8_t* data, size_t* sizep, uint8_t* payload_type, int loss)
 {
 	uint32_t pos, space;
@@ -275,27 +368,31 @@ static int real_video_cache_get(sim_session_t* s, sim_frame_cache_t* c, uint8_t*
 	space = SU_MAX(c->wait_timer, c->frame_timer);
 
 	/*计算播放时间同步*/
+	
+	play_ready_ts = real_video_ready_ms(s, c);
+
 	c->f = 1.0f;
-	if (c->play_frame_ts + space > c->max_ts)
+	if (loss != 0 && play_ready_ts < SU_MIN(space, 4 * c->frame_timer))
 		c->f = 0.6f;
-	else if (c->play_frame_ts + space * 2 < c->max_ts)
-		c->f = 1.6f;
-	else if (c->play_frame_ts + space * 3 / 2 < c->max_ts)
+	else if (play_ready_ts > c->frame_timer * 4 && play_ready_ts > MIN_EVICT_DELAY_MS / 2)
+		c->f = 3.0f;
+	else if (play_ready_ts > space && play_ready_ts >= SU_MAX(80, 2 * c->frame_timer))
 		c->f = 1.2f;
 
 	real_video_cache_sync_timestamp(s, c);
 
 	/*计算能播放的帧时间*/
-	play_ready_ts = real_video_ready_ms(s, c);
-	if (play_ready_ts == 0 && c->play_frame_ts + SU_MAX(MAX_VIDEO_DELAY_MS, 4 * c->wait_timer) < c->max_ts){
+	if (c->play_frame_ts + SU_MAX(MIN_EVICT_DELAY_MS, SU_MIN(MAX_EVICT_DELAY_MS, 4 * c->wait_timer)) < c->max_ts){
 		evict_gop_frame(s, c);
 	}
+
+	real_video_cache_evict_discard(s, c);
 
 	pos = INDEX(c->min_fid + 1);
 	frame = &c->frames[pos];
 	if ((c->min_fid + 1 == frame->fid || frame->frame_type == 1) && real_video_cache_check_frame_full(s, frame) == 0){
 		/*进行间歇性快进*/
-		if (frame->ts > c->frame_ts + 2 * space && play_ready_ts > space)
+		if (frame->ts > c->frame_ts + SU_MAX(500, 2 * space) && play_ready_ts > space)
 			c->frame_ts = frame->ts - space;
 		else if (frame->ts <= c->frame_ts){
 			for (i = 0; i < frame->seg_number; ++i){
@@ -309,16 +406,11 @@ static int real_video_cache_get(sim_session_t* s, sim_frame_cache_t* c, uint8_t*
 					break;
 				}
 			}
-			/*毕竟等待缓冲的时间*/
-			if (space * 3 / 2 < play_ready_ts){
-				c->frame_ts = frame->ts + c->frame_timer;
-			}
-			if (space < play_ready_ts)
-				c->frame_ts = frame->ts + 2;
+			/*等待缓冲的时间*/
+			if (c->frame_timer * 2 < play_ready_ts)
+				c->frame_ts = frame->ts + 5;
 			else
 				c->frame_ts = frame->ts;
-
-			c->play_frame_ts = frame->ts;
 
 			real_video_clean_frame(s, c, frame);
 			ret = 0;
@@ -352,6 +444,7 @@ static uint32_t real_video_cache_delay(sim_session_t* s, sim_frame_cache_t* c)
 /*********************************************视频接收端处理*************************************************/
 typedef struct
 {
+	int64_t				loss_ts;
 	int64_t				ts;					/*丢包请求时刻，一般要过一个周期才进行重新请求，这个周期一般是RTT的倍数关系*/
 	int					count;				/*丢包请求时刻*/
 }sim_loss_t;
@@ -385,10 +478,10 @@ static void send_sim_feedback(void* handler, const uint8_t* payload, int payload
 	sim_encode_msg(&s->sstrm, &header, &feedback);
 	sim_session_network_send(s, &s->sstrm);
 
-	sim_debug("sim send SIM_FEEDBACK, feedback size = %u\n", payload_size);
+	/*sim_debug("sim send SIM_FEEDBACK, feedback size = %u\n", payload_size);*/
 }
 
-sim_receiver_t* sim_receiver_create(sim_session_t* s)
+sim_receiver_t* sim_receiver_create(sim_session_t* s, int transport_type)
 {
 	sim_receiver_t* r = calloc(1, sizeof(sim_receiver_t));
 
@@ -396,9 +489,13 @@ sim_receiver_t* sim_receiver_create(sim_session_t* s)
 	r->cache = open_real_video_cache(s);
 	r->cache_ts = GET_SYS_MS();
 	r->s = s;
+	r->fir_state = fir_normal;
 
 	/*创建一个接收端的拥塞控制对象*/
-	r->cc = razor_receiver_create(MIN_BITRATE, MAX_BITRATE, SIM_SEGMENT_HEADER_SIZE, r, send_sim_feedback);
+	r->cc_type = transport_type;
+	r->cc = razor_receiver_create(r->cc_type, MIN_BITRATE, MAX_BITRATE, SIM_SEGMENT_HEADER_SIZE, r, send_sim_feedback);
+
+	r->recover = sim_fec_create(s);
 
 	return r;
 }
@@ -418,10 +515,15 @@ void sim_receiver_destroy(sim_session_t* s, sim_receiver_t* r)
 		r->cc = NULL;
 	}
 
+	if (r->recover != NULL){
+		sim_fec_destroy(s, r->recover);
+		r->recover = NULL;
+	}
+
 	free(r);
 }
 
-void sim_receiver_reset(sim_session_t* s, sim_receiver_t* r)
+void sim_receiver_reset(sim_session_t* s, sim_receiver_t* r, int transport_type)
 {
 	reset_real_video_cache(s, r->cache);
 	skiplist_clear(r->loss);
@@ -430,16 +532,24 @@ void sim_receiver_reset(sim_session_t* s, sim_receiver_t* r)
 	r->base_seq = 0;
 	r->actived = 0;
 	r->max_seq = 0;
+	r->max_ts = 0;
 	r->ack_ts = GET_SYS_MS();
 	r->active_ts = r->ack_ts;
 	r->loss_count = 0;
+	r->fir_state = fir_normal;
+	r->fir_seq = 0;
+
+	if (r->recover != NULL)
+		sim_fec_reset(s, r->recover);
 
 	/*重新创建一个CC对象*/
 	if (r->cc != NULL){
 		razor_receiver_destroy(r->cc);
 		r->cc = NULL;
 	}
-	r->cc = razor_receiver_create(MIN_BITRATE, MAX_BITRATE, SIM_SEGMENT_HEADER_SIZE, r, send_sim_feedback);
+
+	r->cc_type = transport_type;
+	r->cc = razor_receiver_create(r->cc_type, MIN_BITRATE, MAX_BITRATE, SIM_SEGMENT_HEADER_SIZE, r, send_sim_feedback);
 }
 
 int sim_receiver_active(sim_session_t* s, sim_receiver_t* r, uint32_t uid)
@@ -452,30 +562,68 @@ int sim_receiver_active(sim_session_t* s, sim_receiver_t* r, uint32_t uid)
 
 	r->base_uid = uid;
 	r->active_ts = GET_SYS_MS();
+	r->fir_state = fir_normal;
+
+	if (r->recover != NULL)
+		sim_fec_active(s, r->recover);
+
 	return 0;
 }
 
-static void sim_receiver_update_loss(sim_session_t* s, sim_receiver_t* r, uint32_t seq)
+#define FIR_DELAY_TIME 2000
+static void sim_receiver_send_fir(sim_session_t* s, sim_receiver_t* r)
 {
-	uint32_t i;
+	sim_fir_t fir;
+	sim_header_t header;
+
+	int64_t cur_ts = GET_SYS_MS();
+	if (r->fir_ts + FIR_DELAY_TIME < cur_ts){
+		INIT_SIM_HEADER(header, SIM_FIR, s->uid);
+		fir.fir_seq = (r->fir_state == fir_flightting) ? r->fir_seq : (++r->fir_seq);
+
+		sim_encode_msg(&s->sstrm, &header, &fir);
+		sim_session_network_send(s, &s->sstrm);
+
+		r->fir_ts = cur_ts;
+	}
+}
+
+static void sim_receiver_update_loss(sim_session_t* s, sim_receiver_t* r, uint32_t seq, uint32_t ts)
+{
+	uint32_t i, space;
 	skiplist_item_t key, val;
 	skiplist_iter_t* iter;
 	int64_t now_ts;
 
 	now_ts = GET_SYS_MS();
-	key.u32 = seq;
-	skiplist_remove(r->loss, key);
+	if (r->max_ts + 3000 < ts){
+		skiplist_clear(r->loss);
+		sim_receiver_send_fir(s, r);
+	}
+	else if (s->rtt >= CACHE_MAX_DELAY){
+		skiplist_clear(r->loss);
+		sim_receiver_send_fir(s, r);
+	}
+	else{
+		if (s->rtt/2 < s->rtt_var)
+			space = (s->rtt_var + s->rtt)/ 2;
+		else
+			space = s->rtt;
 
-	for (i = r->max_seq + 1; i < seq; ++i){
-		key.u32 = i;
-		iter = skiplist_search(r->loss, key);
-		if (iter == NULL){
-			sim_loss_t* l = calloc(1, sizeof(sim_loss_t));
-			l->ts = now_ts - s->rtt_var;						/*设置下一个请求重传的时刻*/
-			l->count = 0;
-			val.ptr = l;
+		key.u32 = seq;
+		skiplist_remove(r->loss, key);
+		for (i = r->max_seq + 1; i < seq; ++i){
+			key.u32 = i;
+			iter = skiplist_search(r->loss, key);
+			if (iter == NULL){
+				sim_loss_t* l = calloc(1, sizeof(sim_loss_t));
+				l->ts = now_ts - space;						/*设置下一个请求重传的时刻*/
+				l->loss_ts = now_ts;
+				l->count = 0;
+				val.ptr = l;
 
-			skiplist_insert(r->loss, key, val);
+				skiplist_insert(r->loss, key, val);
+			}
 		}
 	}
 }
@@ -503,11 +651,14 @@ static void video_real_ack(sim_session_t* s, sim_receiver_t* r, int hb, uint32_t
 	uint32_t min_seq, delay, space_factor;
 	int max_count = 0;
 
+	uint32_t numbers[NACK_NUM];
+	int i, evict_count = 0;
+
 	cur_ts = GET_SYS_MS();
 	/*如果是心跳触发*/
 	if ((hb == 0 && r->ack_ts + ACK_REAL_TIME < cur_ts) || (r->ack_ts + ACK_HB_TIME < cur_ts)){
+
 		ack.acked_packet_id = seq;
-		/**/
 		min_seq = real_video_cache_get_min_seq(s, r->cache);
 		if (min_seq > r->base_seq){
 			for (key.u32 = r->base_seq + 1; key.u32 <= min_seq; ++key.u32)
@@ -523,8 +674,12 @@ static void video_real_ack(sim_session_t* s, sim_receiver_t* r, int hb, uint32_t
 			if (iter->key.u32 <= r->base_seq)
 				continue;
 
-			space_factor = (SU_MIN(1.5, l->count * 0.1 + 1)) * (s->rtt + s->rtt_var); /*用于简单的拥塞限流，防止GET洪水*/
-			if (l->ts + space_factor <= cur_ts && l->count < 10 && ack.nack_num < NACK_NUM){
+			space_factor = SU_MAX(10, s->rtt + s->rtt_var) + l->count * SU_MIN(100, SU_MAX(10, s->rtt_var)); /*用于简单的拥塞限流，防止GET洪水*/
+			if (l->count < 15 && l->loss_ts + MIN_EVICT_DELAY_MS / 2 > cur_ts){
+				if (evict_count < NACK_NUM)
+					numbers[evict_count++] = iter->key.u32;
+			}
+			else if (l->ts + space_factor <= cur_ts && ack.nack_num < NACK_NUM){
 				ack.nack[ack.nack_num++] = iter->key.u32 - r->base_seq;
 				l->ts = cur_ts;
 
@@ -535,29 +690,38 @@ static void video_real_ack(sim_session_t* s, sim_receiver_t* r, int hb, uint32_t
 			if (l->count > max_count)
 				max_count = l->count;
 		}
+
+		if (s->rtt >= CACHE_MAX_DELAY && ack.nack_num > 0){
+			skiplist_clear(r->loss);
+			sim_receiver_send_fir(s, r);
+
+			ack.nack_num = 0;
+		}
 		
 		sim_receiver_send_ack(s, &ack);
 
 		r->ack_ts = cur_ts;
-	}
 
-	/*根据丢包重传确定视频缓冲区需要的缓冲时间*/
-	if (max_count > 1){
-		delay = (max_count + 8) * (s->rtt + s->rtt_var) / 8;
-		if (delay > r->cache->wait_timer)
-			r->cache->wait_timer = SU_MIN(delay, 3000);
+		/*根据丢包重传确定视频缓冲区需要的缓冲时间*/
+		if (max_count >= 1)
+			delay = (max_count + 7) * (s->rtt + s->rtt_var) / 8;
+		else
+			delay = SU_MAX(80, (s->rtt + s->rtt_var) / 4);
 
+		r->cache->wait_timer = (r->cache->wait_timer * 7 + delay) / 8;
 		r->cache->wait_timer = SU_MAX(r->cache->frame_timer, r->cache->wait_timer);
+
+		for (i = 0; i < evict_count; i++){
+			key.u32 = numbers[i];
+			skiplist_remove(r->loss, key);
+			real_video_cache_discard(s, r->cache, key.u32);
+		}
 	}
 }
 
-int sim_receiver_put(sim_session_t* s, sim_receiver_t* r, sim_segment_t* seg)
+static int sim_receiver_internal_put(sim_session_t* s, sim_receiver_t* r, sim_segment_t* seg)
 {
 	uint32_t seq;
-
-	/*拥塞报告*/
-	if (r->cc != NULL)
-		r->cc->on_received(r->cc, seg->transport_seq, seg->timestamp + seg->send_ts, seg->data_size + SIM_SEGMENT_HEADER_SIZE, seg->remb);
 
 	if (r->max_seq == 0 && seg->ftype == 0)
 		return -1;
@@ -569,18 +733,93 @@ int sim_receiver_put(sim_session_t* s, sim_receiver_t* r, sim_segment_t* seg)
 	if (r->max_seq == 0 && seg->packet_id > seg->index){
 		r->max_seq = seg->packet_id - seg->index - 1;
 		r->base_seq = seg->packet_id - seg->index - 1;
+		r->max_ts = seg->timestamp;
 	}
 
-	sim_receiver_update_loss(s, r, seq);
+	sim_receiver_update_loss(s, r, seq, seg->timestamp);
 	if (real_video_cache_put(s, r->cache, seg) != 0)
 		return -1;
+
+	if (seg->ftype == 1)
+		r->fir_state = fir_normal;
 
 	if (seq == r->base_seq + 1)
 		r->base_seq = seq;
 
 	r->max_seq = SU_MAX(r->max_seq, seq);
+	r->max_ts = SU_MAX(r->max_ts, seg->timestamp);
+
+	return 0;
+}
+
+static void sim_receiver_recover(sim_session_t* s, sim_receiver_t* r)
+{
+	skiplist_iter_t* iter;
+	skiplist_t* recover_map;
+	sim_segment_t* seg, *in_seg;
+
+	/*将已经恢复的包进行处理*/
+	recover_map = r->recover->recover_packets;
+	while (skiplist_size(recover_map) > 0){
+		iter = skiplist_first(recover_map);
+		seg = iter->val.ptr;
+
+		in_seg = malloc(sizeof(sim_segment_t));
+		*in_seg = *seg;
+
+		skiplist_remove(recover_map, iter->key);
+
+		if (sim_receiver_internal_put(s, r, in_seg) == 0){
+			sim_debug("fec recover video segment, packet id = %u\n", in_seg->packet_id);
+			sim_fec_put_segment(s, r->recover, in_seg); /*将恢复的包插入到FEC继续恢复其他报文*/
+		}
+		else
+			free(in_seg);
+	}
+}
+
+int sim_receiver_put(sim_session_t* s, sim_receiver_t* r, sim_segment_t* seg)
+{
+	int rc;
+
+	/*拥塞报告*/
+	if (r->cc != NULL)
+		r->cc->on_received(r->cc, seg->transport_seq, seg->timestamp + seg->send_ts, seg->data_size + SIM_SEGMENT_HEADER_SIZE, seg->remb);
+
+	rc = sim_receiver_internal_put(s, r, seg);
+	if (rc != 0)
+		return rc;
+		
+	/*sim_debug("put video segment, packet id = %u\n", seg->packet_id);*/
+	/*进行FEC 恢复*/
+	if (r->recover != NULL && seg->fec_id > 0){
+		sim_fec_put_segment(s, r->recover, seg);
+		sim_receiver_recover(s, r);
+	}
 
 	video_real_ack(s, r, 0, seg->packet_id);
+
+	return rc;
+}
+
+int sim_receiver_put_fec(sim_session_t* s, sim_receiver_t* r, sim_fec_t* fec)
+{
+	if (r->cc != NULL)
+		r->cc->on_received(r->cc, fec->transport_seq, fec->send_ts, fec->fec_data_size + SIM_SEGMENT_HEADER_SIZE, 1);
+
+	if (r->recover != NULL){
+		sim_fec_put_fec_packet(s, r->recover, fec);
+		sim_receiver_recover(s, r);
+	}
+
+	return 0;
+}
+
+int sim_receiver_padding(sim_session_t* s, sim_receiver_t* r, uint16_t transport_seq, uint32_t send_ts, size_t data_size)
+{
+	/*拥塞报告*/
+	if (r->cc != NULL)
+		r->cc->on_received(r->cc, transport_seq, send_ts, data_size + SIM_SEGMENT_HEADER_SIZE, 1);
 
 	return 0;
 }
@@ -599,19 +838,22 @@ void sim_receiver_timer(sim_session_t* s, sim_receiver_t* r, int64_t now_ts)
 	video_real_ack(s, r, 1, 0);
 
 	/*每1秒尝试缩一次缓冲区等待时间*/
-	if (r->cache_ts + SU_MAX(s->rtt + s->rtt_var, 1000) < now_ts){
+	if (r->cache_ts + SU_MAX(s->rtt + s->rtt_var, 500) < now_ts){
 		if (r->loss_count == 0)
-			r->cache->wait_timer = SU_MAX(r->cache->wait_timer * 7 / 8, r->cache->frame_timer);
+			r->cache->wait_timer = SU_MAX(r->cache->wait_timer * 7 / 8, (s->rtt + s->rtt_var) / 2);
 		else if (r->cache->wait_timer > 2 * (s->rtt + s->rtt_var))
-			r->cache->wait_timer = SU_MAX(r->cache->wait_timer * 15 / 16, r->cache->frame_timer);
+			r->cache->wait_timer = SU_MAX(r->cache->wait_timer * 15 / 16, (s->rtt + s->rtt_var));
 
-		r->cache_ts = GET_SYS_MS();
+		r->cache_ts = now_ts;
 		r->loss_count = 0;
 	}
 
 	/*拥塞控制心跳*/
 	if (r->cc != NULL)
 		r->cc->heartbeat(r->cc);
+
+	if (r->recover != NULL)
+		sim_fec_evict(s, r->recover, now_ts);
 }
 
 void sim_receiver_update_rtt(sim_session_t* s, sim_receiver_t* r)

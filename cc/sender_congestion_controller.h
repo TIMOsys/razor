@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -8,7 +8,7 @@
 #ifndef __sender_congestion_controller_h_
 #define __sender_congestion_controller_h_
 
-#include "feedback_adapter.h"
+#include "cc_feedback_adapter.h"
 #include "delay_base_bwe.h"
 #include "bitrate_controller.h"
 #include "pace_sender.h"

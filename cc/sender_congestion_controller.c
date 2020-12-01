@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -40,7 +40,7 @@ sender_cc_t* sender_cc_create(void* trigger, bitrate_changed_func bitrate_cb, vo
 	cc->bwe = delay_bwe_create();
 	cc->pacer = pace_create(handler, send_cb, cc->accepted_queue_ms);
 
-	feedback_adapter_init(&cc->adapter);
+	cc_feedback_adapter_init(&cc->adapter);
 
 	delay_bwe_set_min_bitrate(cc->bwe, k_min_bitrate_bps);
 	pace_set_bitrate_limits(cc->pacer, k_min_bitrate_bps);
@@ -80,7 +80,7 @@ void sender_cc_destroy(sender_cc_t* cc)
 		cc->pacer = NULL;
 	}
 
-	feedback_adapter_destroy(&cc->adapter);
+	cc_feedback_adapter_destroy(&cc->adapter);
 
 	bin_stream_destroy(&cc->strm);
 
@@ -96,7 +96,7 @@ void sender_cc_heartbeat(sender_cc_t* cc)
 	pace_try_transmit(cc->pacer, now_ts);
 
 	/*进行带宽调节*/
-	bitrate_controller_heartbeat(cc->bitrate_controller, now_ts);
+	bitrate_controller_heartbeat(cc->bitrate_controller, now_ts, ack_estimator_bitrate_bps(cc->ack));
 }
 
 int sender_cc_add_pace_packet(sender_cc_t* cc, uint32_t packet_id, int retrans, size_t size)
@@ -106,7 +106,7 @@ int sender_cc_add_pace_packet(sender_cc_t* cc, uint32_t packet_id, int retrans, 
 
 void sender_on_send_packet(sender_cc_t* cc, uint16_t seq, size_t size)
 {
-	feedback_add_packet(&cc->adapter, seq, size);
+	cc_feedback_add_packet(&cc->adapter, seq, size);
 
 	/*todo:进行RTT周期内是否发送码率溢出，可以不实现*/
 }
@@ -133,7 +133,7 @@ void sender_on_feedback(sender_cc_t* cc, uint8_t* feedback, int feedback_size)
 
 	/*处理proxy estimate的信息*/
 	if ((msg.flag & proxy_ts_msg) == proxy_ts_msg){
-		if (feedback_on_feedback(&cc->adapter, &msg) <= 0)
+		if (cc_feedback_on_feedback(&cc->adapter, &msg) <= 0)
 			return;
 
 		cur_alr = pace_get_limited_start_time(cc->pacer) > 0 ? 0 : -1;
@@ -151,7 +151,7 @@ void sender_on_feedback(sender_cc_t* cc, uint8_t* feedback, int feedback_size)
 
 		/*进行码率调节*/
 		if (bwe_result.updated == 0)
-			bitrate_controller_on_basedelay_result(cc->bitrate_controller, bwe_result.updated, bwe_result.probe, bwe_result.bitrate, bwe_result.recovered_from_overuse);
+			bitrate_controller_on_basedelay_result(cc->bitrate_controller, bwe_result.updated, bwe_result.probe, bwe_result.bitrate, cc->bwe->detector->state);
 	}
 	/*处理remb*/
 	if ((msg.flag & remb_msg) == remb_msg){
@@ -161,7 +161,7 @@ void sender_on_feedback(sender_cc_t* cc, uint8_t* feedback, int feedback_size)
 	/*处理loss info*/
 	if ((msg.flag & loss_info_msg) == loss_info_msg){
 		razor_debug("sender receive loss info, fraction_loss = %u, packets_num = %u\n", msg.fraction_loss, msg.packet_num);
-		bitrate_controller_on_report(cc->bitrate_controller, cc->rtt, now_ts, msg.fraction_loss, msg.packet_num);
+		bitrate_controller_on_report(cc->bitrate_controller, cc->rtt, now_ts, msg.fraction_loss, msg.packet_num, ack_estimator_bitrate_bps(cc->ack));
 	}
 }
 
@@ -184,8 +184,10 @@ void sender_cc_set_bitrates(sender_cc_t* cc, uint32_t min_bitrate, uint32_t star
 
 	bitrate_controller_set_bitrates(cc->bitrate_controller, start_bitrate, min_bitrate, max_bitrate);
 
-	pace_set_estimate_bitrate(cc->pacer, start_bitrate);
+	/*pace是用BYTE计算*/
 	pace_set_bitrate_limits(cc->pacer, min_bitrate);
+	pace_set_estimate_bitrate(cc->pacer, start_bitrate);
+
 
 	razor_info("set razor sender bitrates, min = %ubps, max = %ubps, start = %ubps\n", min_bitrate, max_bitrate, start_bitrate);
 }

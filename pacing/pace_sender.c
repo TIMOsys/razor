@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -9,9 +9,9 @@
 #include "razor_log.h"
 
 #define k_min_packet_limit_ms		5			/*发包最小间隔*/
-#define k_max_interval_ms			30			/*发包最大时间差，长时间不发送报文一次发送很多数据出去造成网络风暴*/
-
-
+#define k_max_interval_ms			50			/*发包最大时间差，长时间不发送报文一次发送很多数据出去造成网络风暴*/
+#define k_default_pace_factor		1.2
+#define k_min_pacing_bitrate		(50 * 1000 * 8)
 
 pace_sender_t* pace_create(void* handler, pace_send_func send_cb, uint32_t que_ms)
 {
@@ -49,19 +49,19 @@ void pace_destroy(pace_sender_t* pace)
 void pace_set_estimate_bitrate(pace_sender_t* pace, uint32_t bitrate_bps)
 {
 	pace->estimated_bitrate = bitrate_bps;
-	pace->pacing_bitrate_kpbs = SU_MAX(bitrate_bps / 1000, pace->min_sender_bitrate_kpbs);
+	pace->pacing_bitrate_kpbs = SU_MAX(bitrate_bps / 1000, pace->min_sender_bitrate_kpbs) * k_default_pace_factor;
 	alr_detector_set_bitrate(pace->alr, bitrate_bps);
 
 	razor_debug("set pacer bitrate, bitrate = %ubps\n", bitrate_bps);
 }
 
 /*设置最小带宽限制*/
-void pace_set_bitrate_limits(pace_sender_t* pace, uint32_t min_sent_bitrate)
+void pace_set_bitrate_limits(pace_sender_t* pace, uint32_t min_sent_bitrate_pbs)
 {
-	pace->min_sender_bitrate_kpbs = min_sent_bitrate / 1000;
-	pace->pacing_bitrate_kpbs = SU_MAX(pace->estimated_bitrate / 1000, pace->min_sender_bitrate_kpbs);
+	pace->min_sender_bitrate_kpbs = k_min_pacing_bitrate / 1000;
+	pace->pacing_bitrate_kpbs = SU_MAX(pace->estimated_bitrate / 1000, pace->min_sender_bitrate_kpbs) * k_default_pace_factor;
 
-	razor_info("set pacer min bitrate, bitrate = %ubps\n", min_sent_bitrate);
+	razor_info("set pacer min bitrate, bitrate = %ubps\n", min_sent_bitrate_pbs);
 }
 
 /*将一个即将要发送的报文放入排队队列中*/
@@ -107,7 +107,7 @@ static int pace_send(pace_sender_t* pace, packet_event_t* ev)
 
 	/*调用外部接口进行数据发送*/
 	if (pace->send_cb != NULL)
-		pace->send_cb(pace->handler, ev->seq, ev->retrans, ev->size);
+		pace->send_cb(pace->handler, ev->seq, ev->retrans, ev->size, 0);
 
 	use_budget(&pace->media_budget, ev->size);
 
@@ -130,7 +130,7 @@ void pace_try_transmit(pace_sender_t* pace, int64_t now_ts)
 	
 	/*计算media budget中需要的码率,并更新到media budget之中*/
 	if (pacer_queue_bytes(&pace->que) > 0){
-		target_bitrate_kbps = pacer_queue_target_bitrate_kbps(&pace->que, now_ts) /*+ pace->pacing_bitrate_kpbs;*/;
+		target_bitrate_kbps = pacer_queue_target_bitrate_kbps(&pace->que, now_ts);
 		target_bitrate_kbps = SU_MAX(pace->pacing_bitrate_kpbs, target_bitrate_kbps);
 	}
 	else
@@ -149,16 +149,17 @@ void pace_try_transmit(pace_sender_t* pace, int64_t now_ts)
 				pace->first_sent_ts = now_ts;
 			
 			sent_bytes += ev->size;
-			pacer_queue_sent(&pace->que, ev->seq);
+			pacer_queue_sent(&pace->que, ev);
 		}
 		else
 			break;
 	}
 
 	pace->last_update_ts = now_ts;
-
-	/*更新预测器,假如预测期空闲的空间太多，进行加大码率*/
-	alr_detector_bytes_sent(pace->alr, sent_bytes, elapsed_ms);
+	if (sent_bytes > 0){
+		/*更新预测器,假如预测期空闲的空间太多，进行加大码率*/
+		alr_detector_bytes_sent(pace->alr, sent_bytes, elapsed_ms);
+	}
 }
 
 

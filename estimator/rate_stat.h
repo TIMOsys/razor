@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -9,6 +9,10 @@
 #define __rate_stat_h_
 
 #include "cf_platform.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef struct
 {
@@ -27,7 +31,7 @@ typedef struct
 
 	float			scale;
 
-	int				accumulated_count;
+	int64_t			accumulated_count;
 	int				sample_num;
 }rate_stat_t;
 
@@ -42,6 +46,8 @@ int					rate_stat_rate(rate_stat_t* rate, int64_t now_ts);
 
 #endif
 
-
+#ifdef __cplusplus
+}
+#endif 
 
 

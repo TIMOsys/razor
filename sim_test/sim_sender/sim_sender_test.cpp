@@ -83,7 +83,7 @@ static void notify_callback(void* event, int type, uint32_t val)
 	su_mutex_unlock(main_mutex);
 }
 
-static void notify_change_bitrate(void* event, uint32_t bitrate_kbps)
+static void notify_change_bitrate(void* event, uint32_t bitrate_kbps, int lost)
 {
 	thread_msg_t msg;
 	msg.msg_id = el_change_bitrate;
@@ -101,7 +101,7 @@ static void notify_state(void* event, const char* info)
 	strcpy(g_info, info);
 }
 
-#define MAX_SEND_BITRATE (300 * 8 * 1000)
+#define MAX_SEND_BITRATE (6000 * 8 * 1000)
 #define MIN_SEND_BITRATE (20 * 8 * 1000)
 #define START_SEND_BITRATE (140 * 8 * 1000)
 
@@ -134,6 +134,15 @@ static void try_send_video(video_sender_t* sender)
 
 		sender->prev_ts = now_ts;
 
+		/*限制下模拟包的大小*/
+		if (frame_size > 800 * 1000){
+			sender->frame_rate *= 2;
+			if (sender->frame_rate > 128)
+				sender->frame_rate = 128;
+
+			frame_size = 800 * 1000;
+		}
+
 		if (frame_size > 200){
 			frame_size -= 200;
 			frame_size = frame_size + rand() % 400;
@@ -145,10 +154,6 @@ static void try_send_video(video_sender_t* sender)
 		pos += sizeof(sender->index);
 		memcpy(pos, &now_ts, sizeof(now_ts));
 		pos += sizeof(now_ts);
-
-		/*限制下模拟包的大小*/
-		if (frame_size > 800 * 1000)
-			return;
 
 		ftype = 0;
 		if (sender->index % (sender->frame_rate * 4) == 0) /*关键帧*/
@@ -224,8 +229,12 @@ static void main_loop_event()
 			case el_change_bitrate:
 				if (msg.val <= MAX_SEND_BITRATE / 1000){
 					sender.bitrate_kbps = msg.val;
-					printf("set bytes rate = %ukb/s\n", sender.bitrate_kbps / 8);
 				}
+				else{
+					sender.bitrate_kbps = MAX_SEND_BITRATE / 1000;
+				}
+
+				//printf("set bytes rate = %ukb/s\n", sender.bitrate_kbps / 8);
 				break;
 			}
 		}
@@ -266,7 +275,7 @@ int main(int argc, const char* argv[])
 	sim_init(16000, NULL, log_win_write, notify_callback, notify_change_bitrate, notify_state);
 	sim_set_bitrates(MIN_SEND_BITRATE, START_SEND_BITRATE, MAX_SEND_BITRATE * 5/4);
 
-	if (sim_connect(1000, "192.168.150.30", 6009) != 0){
+	if (sim_connect(1000, "172.16.32.242", 16001, remb_transport, 0, 0) != 0){
 		printf("sim connect failed!\n");
 		goto err;
 	}

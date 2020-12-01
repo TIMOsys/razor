@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -39,7 +39,7 @@ int sim_decode_header(bin_stream_t* strm, sim_header_t* header)
 
 void sim_encode_msg(bin_stream_t* strm, sim_header_t* header, void* body)
 {
-	uint32_t crc;
+	uint32_t crc = 0;
 
 	bin_stream_rewind(strm, 1);
 
@@ -77,6 +77,14 @@ void sim_encode_msg(bin_stream_t* strm, sim_header_t* header, void* body)
 
 	case SIM_FIR:
 		sim_fir_encode(strm, body);
+		break;
+
+	case SIM_PAD:
+		sim_pad_encode(strm, body);
+		break;
+
+	case SIM_FEC:
+		sim_fec_encode(strm, body);
 		break;
 
 	default:
@@ -126,6 +134,14 @@ int sim_decode_msg(bin_stream_t* strm, sim_header_t* header, void* body)
 		ret = sim_fir_decode(strm, body);
 		break;
 
+	case SIM_PAD:
+		ret = sim_pad_decode(strm, body);
+		break;
+
+	case SIM_FEC:
+		ret = sim_fec_decode(strm, body);
+		break;
+
 	default:
 		;
 	}
@@ -165,6 +181,12 @@ const char* sim_get_msg_name(uint8_t msg_id)
 
 	case SIM_FIR:
 		return "SIM_FIR";
+
+	case SIM_PAD:
+		return "SIM_PAD";
+
+	case SIM_FEC:
+		return "SIM_FEC";
 
 	default:
 		return "unknown message";

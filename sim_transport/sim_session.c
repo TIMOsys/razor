@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -32,7 +32,8 @@ typedef void(*session_command_fn)(sim_session_t* s, uint64_t ts);
 sim_session_t* sim_session_create(uint16_t port, void* event, sim_notify_fn notify_cb, sim_change_bitrate_fn change_bitrate_cb, sim_state_fn state_cb)
 {
 	sim_session_t* session = calloc(1, sizeof(sim_session_t));
-	session->cid = rand();
+	session->scid = rand();
+	session->rcid = 0;
 	session->uid = 0;
 	session->rtt = 100;
 	session->rtt_var = 5;
@@ -45,6 +46,10 @@ sim_session_t* sim_session_create(uint16_t port, void* event, sim_notify_fn noti
 	session->max_bitrate = MAX_BITRATE;
 	session->start_bitrate = START_BITRATE;
 	session->commad_ts = GET_SYS_MS();
+
+	session->transport_type = gcc_transport;
+	session->padding = 1;
+	session->fec = 1;
 
 	session->notify_cb = notify_cb;
 	session->change_bitrate_cb = change_bitrate_cb;
@@ -99,7 +104,8 @@ static void sim_session_reset(sim_session_t* s)
 	s->rtt = 100;
 	s->rtt_var = 5;
 	s->loss_fraction = 0;
-	s->cid = rand();
+	s->scid = rand();
+	s->rcid = 0;
 	s->rbandwidth = 0;
 	s->sbandwidth = 0;
 	s->rcount = 0;
@@ -111,7 +117,12 @@ static void sim_session_reset(sim_session_t* s)
 	s->resend = 0;
 	s->commad_ts = s->stat_ts;
 	s->interrupt = net_normal;
+	s->transport_type = gcc_transport;
+	s->padding = 1;
+	s->fec = 1;
 	
+	s->fir_seq = 0;
+
 	if (s->sender != NULL){
 		sim_sender_destroy(s, s->sender);
 		s->sender = NULL;
@@ -129,8 +140,9 @@ static void sim_session_send_connect(sim_session_t* s, int64_t now_ts)
 	sim_connect_t body;
 
 	INIT_SIM_HEADER(header, SIM_CONNECT, s->uid);
-	body.cid = s->cid;
+	body.cid = s->scid;
 	body.token_size = 0;
+	body.cc_type = (uint8_t)s->transport_type;
 	/*此处只是测试程序，不填写token*/
 
 	sim_encode_msg(&s->sstrm, &header, &body);
@@ -142,7 +154,7 @@ static void sim_session_send_connect(sim_session_t* s, int64_t now_ts)
 	s->resend++;
 }
 
-int sim_session_connect(sim_session_t* s, uint32_t local_uid, const char* peer_ip, uint16_t peer_port)
+int sim_session_connect(sim_session_t* s, uint32_t local_uid, const char* peer_ip, uint16_t peer_port, int transport_type, int padding, int fec)
 {
 	int ret = -1;
 	su_mutex_lock(s->mutex);
@@ -158,7 +170,15 @@ int sim_session_connect(sim_session_t* s, uint32_t local_uid, const char* peer_i
 	s->uid = local_uid;
 	ret = 0;
 	s->state = session_connecting;
+	s->transport_type = transport_type;
+	s->padding = padding;
+	s->fec = fec;
 	s->resend = 0;
+	s->scid = rand();
+
+	s->fir_seq = 0;
+
+	s->loss_fraction = 0;
 
 	sim_session_send_connect(s, GET_SYS_MS());
 
@@ -173,7 +193,7 @@ static void sim_session_send_disconnect(sim_session_t* s, int64_t now_ts)
 	sim_disconnect_t body;
 
 	INIT_SIM_HEADER(header, SIM_DISCONNECT, s->uid);
-	body.cid = s->cid;
+	body.cid = s->scid;
 
 	sim_encode_msg(&s->sstrm, &header, &body);
 	sim_session_network_send(s, &s->sstrm);
@@ -279,8 +299,10 @@ void sim_session_calculate_rtt(sim_session_t* s, uint32_t keep_rtt)
 		s->rtt = 10;
 
 	/*通知RTT更新*/
-	if (s->sender != NULL)
+	if (s->sender != NULL){
 		sim_sender_update_rtt(s, s->sender);
+		s->sender->cc->update_rtt(s->sender->cc, keep_rtt);
+	}
 
 	if (s->receiver != NULL)
 		sim_receiver_update_rtt(s, s->receiver);
@@ -348,11 +370,13 @@ static void process_sim_connect(sim_session_t* s, sim_header_t* header, bin_stre
 	
 	/*初始化接收端*/
 	if (s->receiver == NULL){
-		s->receiver = sim_receiver_create(s);
+		s->receiver = sim_receiver_create(s, body.cc_type);
 		s->notify_cb(s->event, sim_start_play_notify, header->uid);
 	}
 	else
-		sim_receiver_reset(s, s->receiver);
+		sim_receiver_reset(s, s->receiver, body.cc_type);
+
+	s->rcid = body.cid;
 
 	sim_info("receiver actived!!!\n");
 	sim_receiver_active(s, s->receiver, header->uid);
@@ -386,10 +410,10 @@ static void process_sim_connect_ack(sim_session_t* s, sim_header_t* header, bin_
 		s->state = session_connected;
 		/*创建sender*/
 		if (s->sender == NULL){
-			s->sender = sim_sender_create(s);
+			s->sender = sim_sender_create(s, s->transport_type, s->padding, s->fec);
 		}
 		else
-			sim_sender_reset(s, s->sender);
+			sim_sender_reset(s, s->sender, s->transport_type, s->padding, s->fec);
 		sim_sender_active(s, s->sender);
 
 
@@ -428,8 +452,7 @@ static void process_sim_disconnect(sim_session_t* s, sim_header_t* header, bin_s
 
 	msg_log(addr, "send SIM_CONNECT_ACK to %s\n", ip);
 
-	/*关闭接收端*/
-	if (s->receiver != NULL){
+	if (s->rcid == body.cid && s->receiver != NULL){
 		s->notify_cb(s->event, sim_stop_play_notify, s->receiver->base_uid);
 		sim_receiver_destroy(s, s->receiver);
 		s->receiver = NULL;
@@ -511,6 +534,46 @@ static void process_sim_feedback(sim_session_t* s, sim_header_t* header, bin_str
 		sim_sender_feedback(s, s->sender, &feedback);
 }
 
+static void process_sim_fir(sim_session_t* s, sim_header_t* header, bin_stream_t* strm, su_addr* addr)
+{
+	sim_fir_t fir;
+	if (sim_decode_msg(strm, header, &fir) != 0)
+		return;
+
+	if (s->fir_seq < fir.fir_seq){
+		s->fir_seq = fir.fir_seq;
+		s->notify_cb(s->event, sim_fir_notify, 0);
+
+		if (s->sender != NULL)
+			sim_clean_ack_cache(s, s->sender);
+	}
+}
+
+static void process_sim_pad(sim_session_t* s, sim_header_t* header, bin_stream_t* strm, su_addr* addr)
+{
+	sim_pad_t pad;
+	if (sim_decode_msg(strm, header, &pad) != 0)
+		return;
+
+	if (s->receiver != NULL)
+		sim_receiver_padding(s, s->receiver, pad.transport_seq, pad.send_ts, pad.data_size);	
+}
+
+static void process_sim_fec(sim_session_t* s, sim_header_t* header, bin_stream_t* strm, su_addr* addr)
+{
+	sim_fec_t* fec;
+	fec = malloc(sizeof(sim_fec_t));
+	if (sim_decode_msg(strm, header, fec) != 0){
+		free(fec);
+		return;
+	}
+
+	if (s->receiver != NULL)
+		sim_receiver_put_fec(s, s->receiver, fec);
+	else
+		free(fec);
+}
+
 static void sim_session_process(sim_session_t* s, bin_stream_t* strm, su_addr* addr)
 {
 	sim_header_t header;
@@ -566,6 +629,17 @@ static void sim_session_process(sim_session_t* s, bin_stream_t* strm, su_addr* a
 		process_sim_feedback(s, &header, strm, addr);
 		break;
 
+	case SIM_FIR:
+		process_sim_fir(s, &header, strm, addr);
+		break;
+
+	case SIM_PAD:
+		process_sim_pad(s, &header, strm, addr);
+		break;
+
+	case SIM_FEC:
+		process_sim_fec(s, &header, strm, addr);
+		break;
 	}
 }
 
@@ -584,6 +658,11 @@ static void sim_session_send_ping(sim_session_t* s, int64_t now_ts)
 	s->resend++;
 
 	/*网络超时3秒了，不进行发送报文*/
+	if (s->resend >= 4){
+		if (s->sender != NULL && s->sender->cc != NULL)
+			s->sender->cc->update_rtt(s->sender->cc, s->rtt + 20 * s->resend);
+	}
+
 	if (s->resend > 12){
 		s->interrupt = net_interrupt;
 		s->notify_cb(s->event, net_interrupt_notify, 0);
@@ -613,12 +692,16 @@ static void sim_session_state_timer(sim_session_t* s, int64_t now_ts, sim_sessio
 
 		if (s->state_cb != NULL){
 			sprintf(info, "video rate = %ukb/s, send = %ukb/s, recv = %ukb/s, rtt = %d + %dms, max frame = %u, pacer delay = %ums, cache delay = %ums",
-				s->video_bytes * 1000 / delay, s->sbandwidth * 1000 / delay, s->rbandwidth * 1000 / delay, s->rtt, s->rtt_var, s->max_frame_size, pacer_ms, cache_delay);
+				s->video_bytes * 1000 / delay, (uint32_t)(s->sbandwidth * 1000 / delay), (uint32_t)(s->rbandwidth * 1000 / delay), 
+				s->rtt, s->rtt_var, s->max_frame_size, pacer_ms, cache_delay);
 			s->state_cb(s->event, info);
 		}
 
-		sim_info("sim transport, send count = %u, recv count = %u, send bandwidth = %ukb/s, recv bandwidth = %ukb/s, rtt = %d, video rate = %ukb/s, pacer delay = %ums\n",
-			s->scount / 3, s->rcount / 3, s->sbandwidth * 1000 / delay, s->rbandwidth * 1000 / delay, s->rtt + s->rtt_var, s->video_bytes * 1000 / delay, pacer_ms);
+		if (s->sender != NULL){
+			sim_info("sim transport, send count = %u, recv count = %u, send bandwidth = %ukb/s, recv bandwidth = %ukb/s, rtt = %d, video rate = %ukb/s, pacer delay = %ums, loss=%u\n",
+				(uint32_t)(s->scount / 3), (uint32_t)(s->rcount / 3), (uint32_t)(s->sbandwidth * 1000 / delay),
+				(uint32_t)(s->rbandwidth * 1000 / delay), s->rtt + s->rtt_var, s->video_bytes * 1000 / delay, pacer_ms, s->loss_fraction);
+		}
 
 		s->rbandwidth = 0;
 		s->sbandwidth = 0;
@@ -631,6 +714,8 @@ static void sim_session_state_timer(sim_session_t* s, int64_t now_ts, sim_sessio
 	if (s->commad_ts + tick_delay < now_ts){
 		if (s->resend * tick_delay < 10000){
 			fn(s, now_ts);
+			if (s->resend == 2)
+				s->rtt += 500;
 		}
 		else{
 			if (s->receiver != NULL){

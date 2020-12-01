@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -26,7 +26,7 @@ void VideoViewThread::set_video_devices(CFVideoRecorder* rec, CFVideoPlayer* pla
 void VideoViewThread::run()
 {
 	uint8_t *data;
-	int rc = 1024000, size;
+	int rc = MAX_PIC_SIZE, size;
 	int key;
 	uint8_t payload_type;
 

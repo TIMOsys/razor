@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -91,7 +91,7 @@ void receiver_cc_on_received(receiver_cc_t* cc, uint16_t seq, uint32_t timestamp
 		estimator_proxy_incoming(cc->proxy, now_ts, 0, seq);
 
 	/*进行丢包统计*/
-	loss_statistics_incoming(&cc->loss_stat, seq);
+	loss_statistics_incoming(&cc->loss_stat, seq, now_ts);
 }
 
 void receiver_cc_update_rtt(receiver_cc_t* cc, int32_t rtt)

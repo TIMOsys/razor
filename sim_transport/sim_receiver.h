@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -43,14 +43,22 @@ typedef struct
 
 	float				f;
 
+	skiplist_t*			discard_loss;
+
 	sim_frame_t*		frames;
 }sim_frame_cache_t;
+
+enum{
+	fir_normal,
+	fir_flightting,
+};
 
 struct __sim_receiver
 {
 	uint32_t			base_uid;
 	uint32_t			base_seq;
 	uint32_t			max_seq;
+	uint32_t			max_ts;
 
 	skiplist_t*			loss;
 	int					loss_count;				/*单位时间内出现丢包的次数*/
@@ -61,10 +69,21 @@ struct __sim_receiver
 	uint64_t			cache_ts;
 	uint64_t			active_ts;
 
+	uint64_t			fir_ts;
+
 	int					actived;
+
+	/*和FIR有关的参数*/
+	uint32_t			fir_seq;			/*请求关键帧的消息seq*/
+	int					fir_state;			/*当前fir的状态，*/
+
+	int					cc_type;
 
 	razor_receiver_t*	cc;
 	sim_session_t*		s;
+
+	sim_receiver_fec_t* recover;			/*FEC报文恢复对象*/
 };
+
 
 

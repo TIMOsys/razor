@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -81,15 +81,13 @@ packet_event_t*	pacer_queue_front(pacer_queue_t* que)
 
 	/*取一个未发送的packet*/
 	iter = skiplist_first(que->cache);
-	do{
-		if (iter != NULL){
-			ret = iter->val.ptr;
-			if (ret->sent == 0)
-				break;
-			else
-				iter = iter->next[0];
-		}
-	} while (iter != NULL);
+	while(iter != NULL){
+		ret = iter->val.ptr;
+		if (ret->sent == 0)
+			break;
+		else
+			iter = iter->next[0];
+	}
 
 	return ret;
 }
@@ -123,30 +121,29 @@ void pacer_queue_final(pacer_queue_t* que)
 	}
 }
 
-/*删除第一个单元*/
-void pacer_queue_sent(pacer_queue_t* que, uint32_t seq)
+void pacer_queue_sent_by_id(pacer_queue_t* que, uint32_t id)
 {
-	packet_event_t* packet;
 	skiplist_iter_t* iter;
 	skiplist_item_t key;
 
-	if (skiplist_size(que->cache) == 0)
-		return;
-
-	key.u32 = seq;
+	key.u32 = id;
 	iter = skiplist_search(que->cache, key);
-	if (iter != NULL){
-		packet = iter->val.ptr;
-		packet->sent = 1;				/*标记为已经发送状态*/
+	if (iter != NULL)
+		pacer_queue_sent(que, iter->val.ptr);
+}
 
-		if (que->total_size >= packet->size)
-			que->total_size -= packet->size;
-		else
-			que->total_size = 0;
+/*删除第一个单元*/
+void pacer_queue_sent(pacer_queue_t* que, packet_event_t* ev)
+{
+	ev->sent = 1;				/*标记为已经发送状态*/
 
-		/*删除最老且已经发送的包*/
-		pacer_queue_final(que);
-	}
+	if (que->total_size >= ev->size)
+		que->total_size -= ev->size;
+	else
+		que->total_size = 0;
+
+	/*删除最老且已经发送的包*/
+	pacer_queue_final(que);
 }
 
 int	pacer_queue_empty(pacer_queue_t* que)
@@ -174,7 +171,7 @@ uint32_t pacer_queue_target_bitrate_kbps(pacer_queue_t* que, int64_t now_ts)
 	if (que->oldest_ts != -1 && now_ts > que->oldest_ts){
 		space = (uint32_t)(now_ts - que->oldest_ts);
 		if (space >= que->max_que_ms)
-			space = 1;
+			space = 500;
 		else
 			space = que->max_que_ms - space;
 	}

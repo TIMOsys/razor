@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -10,15 +10,21 @@ struct __sim_session
 	su_socket		s;
 	su_addr			peer;				
 
-	uint32_t		cid;
+	uint32_t		scid;				/*sender call id*/
+	uint32_t		rcid;				/*receiver call id*/
 	uint32_t		uid;				/*本端用户ID*/
 
 	uint32_t		rtt;				/*rtt值*/
 	uint32_t		rtt_var;			/*rtt误差修正值*/
 	uint8_t			loss_fraction;		/*丢包率, 0 ~ 255之间的数，100% = 255*/
+	uint32_t		fir_seq;
 
 	int				state;				/*状态*/
 	int				interrupt;			/*中断*/
+
+	int				transport_type;		/*拥塞控制的类型*/
+	int				padding;			/*cc是否采用填充模式*/
+	int				fec;				/*是否启动FEC*/
 
 	volatile int	run;				/*run线程标示 */
 	su_mutex		mutex;				/*用于上层多线程操作的保护锁*/
@@ -31,10 +37,10 @@ struct __sim_session
 	int64_t			commad_ts;			/*信令时间戳*/
 	int64_t			stat_ts;
 
-	uint32_t		rbandwidth;			/*接收带宽*/
-	uint32_t		sbandwidth;			/*发送带宽*/
-	uint32_t		rcount;				/*接收的报文数量*/
-	uint32_t		scount;				/*发送的报文数量*/
+	uint64_t		rbandwidth;			/*接收带宽*/
+	uint64_t		sbandwidth;			/*发送带宽*/
+	uint64_t		rcount;				/*接收的报文数量*/
+	uint64_t		scount;				/*发送的报文数量*/
 	uint32_t		video_bytes;
 	uint32_t		max_frame_size;		/*周期内最大帧*/
 

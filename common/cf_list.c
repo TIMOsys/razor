@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -85,10 +85,26 @@ void* list_front(base_list_t* l)
 		return l->head->pdata;
 }
 
+void* list_back(base_list_t* l)
+{
+	assert(l != NULL);
+
+	if (l->size <= 0 || l->tailer == NULL)
+		return NULL;
+	else
+		return l->tailer->pdata;
+}
+
 size_t list_size(base_list_t* l)
 {
 	assert(l != NULL);
 	return l->size;
+}
+
+void list_clear(base_list_t* l)
+{
+	while (list_size(l) > 0)
+		list_pop(l);
 }
 
 

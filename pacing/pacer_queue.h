@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -37,7 +37,8 @@ void					pacer_queue_destroy(pacer_queue_t* que);
 int						pacer_queue_push(pacer_queue_t* que, packet_event_t* ev);
 /*获取que中最小seq的包，按顺序发出，这样防止出现大范围的抖动*/
 packet_event_t*			pacer_queue_front(pacer_queue_t* que);
-void					pacer_queue_sent(pacer_queue_t* que, uint32_t seq);
+void					pacer_queue_sent_by_id(pacer_queue_t* que, uint32_t id);
+void					pacer_queue_sent(pacer_queue_t* que, packet_event_t* ev);
 
 int						pacer_queue_empty(pacer_queue_t* que);
 size_t					pacer_queue_bytes(pacer_queue_t* que);

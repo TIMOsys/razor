@@ -1,5 +1,5 @@
 /*-
-* Copyright (c) 2017-2018 wenba, Inc.
+* Copyright (c) 2017-2018 Razor, Inc.
 *	All rights reserved.
 *
 * See the file LICENSE for redistribution information.
@@ -26,6 +26,7 @@
 #define WM_STATE_INFO				(WM_CONNECT_SUCC + 7)
 #define WM_START_PLAY				(WM_CONNECT_SUCC + 8)
 #define WM_STOP_PLAY				(WM_CONNECT_SUCC + 9)
+#define WM_FIR_NOTIFY				(WM_CONNECT_SUCC + 10)
 
 
 class SimFramework
@@ -36,15 +37,17 @@ public:
 
 public:
 	void on_notify(int type, uint32_t val);
-	void on_change_bitrate(uint32_t bitrate_kbps);
+	void on_change_bitrate(uint32_t bitrate_kbps, int lost);
 	void on_state(const char* info);
 
 public:
 	void init(uint16_t port, uint32_t conf_min_bitrate, uint32_t conf_start_bitrate, uint32_t conf_max_bitrate);
 	void destroy();
 
-	int connect(uint32_t user_id, const char* receiver_ip, uint16_t receiver_port);
+	int connect(int transport_type, int padding, int fec, uint32_t user_id, const char* receiver_ip, uint16_t receiver_port);
 	void disconnect();
+
+	void set_bitrate(uint32_t conf_min_bitrate, uint32_t conf_start_bitrate, uint32_t conf_max_bitrate);
 
 	void start_recorder(CFVideoRecorder* rec);
 	void stop_recorder();
@@ -58,6 +61,7 @@ private:
 	VideoRecordhread	rec_;
 	VideoPlayhread		play_;
 };
+
 
 
 #endif 

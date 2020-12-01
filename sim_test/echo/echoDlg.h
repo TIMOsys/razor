@@ -36,6 +36,8 @@ protected:
 	LRESULT		OnNetInterrupt(WPARAM wparam, LPARAM lparam);
 	LRESULT		OnNetRecover(WPARAM wparam, LPARAM lparam);
 
+	LRESULT		OnFirNotify(WPARAM wparam, LPARAM lparam);
+
 	LRESULT		OnStateInfo(WPARAM wparam, LPARAM lparam);
 
 // Implementation
@@ -53,6 +55,9 @@ protected:
 
 	void InitVideoDevices();
 	void CloseAll();
+
+	int	GetVideoResolution();
+	int GetCodec();
 
 	// Generated message map functions
 	virtual BOOL OnInitDialog();
@@ -78,4 +83,13 @@ public:
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
 	CString m_strLocalRes;
 	CString m_strRemoteRes;
+	CComboBox m_cbxCC;
+	CString m_strCC;
+	BOOL m_bPadding;
+	afx_msg void OnBnClickedChkpad();
+	CComboBox m_cbxResolution;
+	CString m_strResolution;
+	CComboBox m_cbxCodec;
+	CString m_strCodec;
+	BOOL m_bFEC;
 };
